@@ -97,7 +97,7 @@ dependencies:
       - fastapi-cli==0.0.7
       - fastrlock==0.8.3
       - filelock==3.16.1
-      - flash-attn==2.7.4.post1
+      # - flash-attn==2.7.4.post1
       - fonttools==4.55.6
       - frozenlist==1.5.0
       - fsspec==2024.9.0
@@ -176,7 +176,7 @@ dependencies:
       - protobuf==4.25.7
       - psutil==6.1.0
       - py-cpuinfo==9.0.0
-      - pyairports==2.1.1
+      # - pyairports==2.1.1
       - pyarrow==18.1.0
       - pycountry==24.6.1
       - pycparser==2.22
