@@ -93,6 +93,7 @@ for round in $(seq 0 $MAX_CORRECTION_ROUNDS); do
         --inference_handler ${INFERENCE_HANDLER} \
         --correction_round ${round} \
         --max_model_len ${MAX_MODEL_LEN} \
+        --trunck 3 \
         --temp ${TEMPERATURE} \
         ${INPUT_ARG} \
         ${PREV_RUN_ARG}"
