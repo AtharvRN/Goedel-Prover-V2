@@ -67,6 +67,7 @@ proof_code_sample_nonneg="\n/-- Suppose $a, b, c$ are the sides of a triangle. P
 
 proof_code_list_sample = [{"name": "nonneg_problem", "code": statement_sample + proof_code_sample_2}]
 
+# proof_code_list_sample = [{"name": "nonneg_problem", "code": proof_code_sample_nonneg}]
 
 # proof_code_list_sample.append({'name': 'timeout_problem', 'code': proof_code_sample_3})
 # proof_code_list_sample.append({'name': 'timeout_problem', 'code': proof_code_sample_5})
@@ -180,7 +181,7 @@ def worker(worker_id, task_queue, result_list, total_restarts, lock, allTactics=
     while True:
         try:
             proof_code_dict = task_queue.get(timeout=10)
-
+            print("proof_code_dict : ",proof_code_dict)
             proof_code = proof_code_dict["code"]
             proof_name = proof_code_dict["name"]
             # proof_id, proof_command = task_queue.get(timeout=10)  # Get task
@@ -205,7 +206,6 @@ def worker(worker_id, task_queue, result_list, total_restarts, lock, allTactics=
         else:
 
             response = send_command_and_wait(child, proof_code, env=0, allTactics=allTactics, ast=ast, premises=premises, tactics=tactics, imports = imports)  # Run proof
-
 
             response["name"] = proof_name
 
@@ -330,6 +330,6 @@ def scheduler(proofs, num_workers=64, allTactics=False, ast=False, premises=Fals
 if __name__ == '__main__':
 
 
-    print(scheduler(proof_code_list_sample, num_workers=16, allTactics=False, ast=False, premises=False, tactics=False))
+    print(scheduler(proof_code_list_sample, num_workers=1, allTactics=False, ast=False, premises=False, tactics=False))
 
     # scheduler(proof_code_list_sample, num_workers=1, ast=True)
