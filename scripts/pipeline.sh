@@ -30,8 +30,15 @@ set -e
 # --- Model and Data Paths ---
 # MODEL_PATH="/path/to/your/llm/model"  # Path to your Large Language Model
 # DATA_PATH="path/to/your/input_problems.jsonl" # Path to your input problems file (e.g., minif2f.jsonl)
-MODEL_PATH="Goedel-LM/Goedel-Prover-V2-8B"
-DATA_PATH="dataset/minif2f.jsonl" # Example path
+
+# --- ARGUMENTS ---
+# Usage: bash pipeline.sh <model_path> <data_path>
+MODEL_PATH=${1:-"Goedel-LM/Goedel-Prover-V2-8B"}
+DATA_PATH=${2:-"dataset/minif2f.jsonl"}
+
+echo "[INFO] Using MODEL_PATH=${MODEL_PATH}"
+echo "[INFO] Using DATA_PATH=${DATA_PATH}"
+
 
 # --- Output Directory ---
 # All generated files (inference results, compilation logs, reports) will be saved here.
