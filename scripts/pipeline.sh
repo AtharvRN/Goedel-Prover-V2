@@ -31,7 +31,7 @@ set -e
 # MODEL_PATH="/path/to/your/llm/model"  # Path to your Large Language Model
 # DATA_PATH="path/to/your/input_problems.jsonl" # Path to your input problems file (e.g., minif2f.jsonl)
 MODEL_PATH="Goedel-LM/Goedel-Prover-V2-8B"
-DATA_PATH="dataset/minf2f.jsonl" # Example path
+DATA_PATH="dataset/minif2f.jsonl" # Example path
 
 # --- Output Directory ---
 # All generated files (inference results, compilation logs, reports) will be saved here.
