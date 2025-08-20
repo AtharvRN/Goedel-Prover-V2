@@ -103,21 +103,14 @@ for round in $(seq 0 $MAX_CORRECTION_ROUNDS); do
         echo "[INFO] Attempt $((retry+1)) of $max_retries..."
         echo "Executing command:"
         echo "${INFERENCE_CMD}"
+        ${INFERENCE_CMD}
 
-        # Run inference in background
-        ${INFERENCE_CMD} &
-        pid=$!
-
-        # Wait for it to finish
-        wait $pid
         exit_code=$?
-
         if [ $exit_code -eq 0 ]; then
             echo "[INFO] Inference succeeded!"
             break
         else
-            echo "[WARN] Inference failed (exit $exit_code). Killing any stuck processes..."
-            pkill -9 -f "src/inference.py"   # force kill if still hanging
+            echo "[WARN] Inference failed or timed out (exit $exit_code). Retrying..."
             retry=$((retry+1))
             sleep 10
         fi
