@@ -97,10 +97,31 @@ for round in $(seq 0 $MAX_CORRECTION_ROUNDS); do
         --temp ${TEMPERATURE} \
         ${INPUT_ARG} \
         ${PREV_RUN_ARG}"
+    max_retries=3
+    retry=0
+    while [ $retry -lt $max_retries ]; do
+        echo "[INFO] Attempt $((retry+1)) of $max_retries..."
+        echo "Executing command:"
+        echo "${INFERENCE_CMD}"
 
-    echo "Executing command:"
-    echo "${INFERENCE_CMD}"
-    ${INFERENCE_CMD}
+        # Run inference in background
+        ${INFERENCE_CMD} &
+        pid=$!
+
+        # Wait for it to finish
+        wait $pid
+        exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            echo "[INFO] Inference succeeded!"
+            break
+        else
+            echo "[WARN] Inference failed (exit $exit_code). Killing any stuck processes..."
+            pkill -9 -f "src/inference.py"   # force kill if still hanging
+            retry=$((retry+1))
+            sleep 10
+        fi
+    done
 
     # Check if the inference output file exists
     SUFFIX=""
