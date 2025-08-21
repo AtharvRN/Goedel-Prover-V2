@@ -43,7 +43,8 @@ echo "[INFO] Using DATA_PATH=${DATA_PATH}"
 # --- Output Directory ---
 # All generated files (inference results, compilation logs, reports) will be saved here.
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BASE_OUTPUT_DIR="results/run_${TIMESTAMP}"
+# BASE_OUTPUT_DIR="results/run_${TIMESTAMP}"
+BASE_OUTPUT_DIR="results/run_20250820_091640"
 
 # --- Inference Settings ---
 INFERENCE_HANDLER="dpskcot" # Inference handler, options: "dpskcot", "dpsknoncot", "kiminacot"
@@ -54,11 +55,11 @@ TEMPERATURE=1.0           # Inference temperature
 MAX_MODEL_LEN=40960       # Maximum model sequence length
 
 # --- Compilation Settings ---
-CPUS=16                   # Number of CPU cores to use for parallel compilation
+CPUS=128                   # Number of CPU cores to use for parallel compilation
 
 # --- Pipeline Control ---
 # Maximum number of correction rounds (0 for initial inference only, 1 for initial + one correction round, etc.)
-MAX_CORRECTION_ROUNDS=2
+MAX_CORRECTION_ROUNDS=0
 
 # =============================================================================
 
@@ -104,24 +105,24 @@ for round in $(seq 0 $MAX_CORRECTION_ROUNDS); do
         --temp ${TEMPERATURE} \
         ${INPUT_ARG} \
         ${PREV_RUN_ARG}"
-    max_retries=3
-    retry=0
-    while [ $retry -lt $max_retries ]; do
-        echo "[INFO] Attempt $((retry+1)) of $max_retries..."
-        echo "Executing command:"
-        echo "${INFERENCE_CMD}"
-        ${INFERENCE_CMD}
+    # max_retries=3
+    # retry=0
+    # while [ $retry -lt $max_retries ]; do
+    #     echo "[INFO] Attempt $((retry+1)) of $max_retries..."
+    #     echo "Executing command:"
+    #     echo "${INFERENCE_CMD}"
+    #     ${INFERENCE_CMD}
 
-        exit_code=$?
-        if [ $exit_code -eq 0 ]; then
-            echo "[INFO] Inference succeeded!"
-            break
-        else
-            echo "[WARN] Inference failed or timed out (exit $exit_code). Retrying..."
-            retry=$((retry+1))
-            sleep 10
-        fi
-    done
+    #     exit_code=$?
+    #     if [ $exit_code -eq 0 ]; then
+    #         echo "[INFO] Inference succeeded!"
+    #         break
+    #     else
+    #         echo "[WARN] Inference failed or timed out (exit $exit_code). Retrying..."
+    #         retry=$((retry+1))
+    #         sleep 10
+    #     fi
+    # done
 
     # Check if the inference output file exists
     SUFFIX=""
