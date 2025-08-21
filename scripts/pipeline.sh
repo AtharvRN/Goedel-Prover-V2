@@ -31,6 +31,7 @@ set -e
 # MODEL_PATH="/path/to/your/llm/model"  # Path to your Large Language Model
 # DATA_PATH="path/to/your/input_problems.jsonl" # Path to your input problems file (e.g., minif2f.jsonl)
 
+
 # --- ARGUMENTS ---
 # Usage: bash pipeline.sh <model_path> <data_path>
 MODEL_PATH=${1:-"Goedel-LM/Goedel-Prover-V2-8B"}
@@ -43,13 +44,12 @@ echo "[INFO] Using DATA_PATH=${DATA_PATH}"
 # --- Output Directory ---
 # All generated files (inference results, compilation logs, reports) will be saved here.
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-# BASE_OUTPUT_DIR="results/run_${TIMESTAMP}"
-BASE_OUTPUT_DIR="results/run_20250820_091640"
+BASE_OUTPUT_DIR="results/run_${TIMESTAMP}"
 
 # --- Inference Settings ---
 INFERENCE_HANDLER="dpskcot" # Inference handler, options: "dpskcot", "dpsknoncot", "kiminacot"
 GPUS=1                    # Number of GPUs to use for vLLM inference
-NUM_SAMPLES_INITIAL=32     # Number of proof samples to generate per problem in the initial round (Round 0)
+NUM_SAMPLES_INITIAL=2     # Number of proof samples to generate per problem in the initial round (Round 0)
 NUM_SAMPLES_CORRECTION=2  # Number of correction samples to generate per failed attempt in correction rounds (Round > 0)
 TEMPERATURE=1.0           # Inference temperature
 MAX_MODEL_LEN=40960       # Maximum model sequence length
@@ -59,7 +59,7 @@ CPUS=128                   # Number of CPU cores to use for parallel compilation
 
 # --- Pipeline Control ---
 # Maximum number of correction rounds (0 for initial inference only, 1 for initial + one correction round, etc.)
-MAX_CORRECTION_ROUNDS=0
+MAX_CORRECTION_ROUNDS=2
 
 # =============================================================================
 
@@ -105,24 +105,24 @@ for round in $(seq 0 $MAX_CORRECTION_ROUNDS); do
         --temp ${TEMPERATURE} \
         ${INPUT_ARG} \
         ${PREV_RUN_ARG}"
-    # max_retries=3
-    # retry=0
-    # while [ $retry -lt $max_retries ]; do
-    #     echo "[INFO] Attempt $((retry+1)) of $max_retries..."
-    #     echo "Executing command:"
-    #     echo "${INFERENCE_CMD}"
-    #     ${INFERENCE_CMD}
+    max_retries=3
+    retry=0
+    while [ $retry -lt $max_retries ]; do
+        echo "[INFO] Attempt $((retry+1)) of $max_retries..."
+        echo "Executing command:"
+        echo "${INFERENCE_CMD}"
+        ${INFERENCE_CMD}
 
-    #     exit_code=$?
-    #     if [ $exit_code -eq 0 ]; then
-    #         echo "[INFO] Inference succeeded!"
-    #         break
-    #     else
-    #         echo "[WARN] Inference failed or timed out (exit $exit_code). Retrying..."
-    #         retry=$((retry+1))
-    #         sleep 10
-    #     fi
-    # done
+        exit_code=$?
+        if [ $exit_code -eq 0 ]; then
+            echo "[INFO] Inference succeeded!"
+            break
+        else
+            echo "[WARN] Inference failed or timed out (exit $exit_code). Retrying..."
+            retry=$((retry+1))
+            sleep 10
+        fi
+    done
 
     # Check if the inference output file exists
     SUFFIX=""
