@@ -36,9 +36,10 @@ set -e
 # Usage: bash pipeline.sh <model_path> <data_path>
 MODEL_PATH=${1:-"Goedel-LM/Goedel-Prover-V2-8B"}
 DATA_PATH=${2:-"dataset/minif2f.jsonl"}
-
+NUM_SAMPLES_INITIAL=${3:-2}
 echo "[INFO] Using MODEL_PATH=${MODEL_PATH}"
 echo "[INFO] Using DATA_PATH=${DATA_PATH}"
+echo "[INFO] Using NUM_SAMPLES_INITIAL=${NUM_SAMPLES_INITIAL}"
 
 
 # --- Output Directory ---
@@ -49,7 +50,7 @@ BASE_OUTPUT_DIR="results/run_${TIMESTAMP}"
 # --- Inference Settings ---
 INFERENCE_HANDLER="dpskcot" # Inference handler, options: "dpskcot", "dpsknoncot", "kiminacot"
 GPUS=2                    # Number of GPUs to use for vLLM inference
-NUM_SAMPLES_INITIAL=2     # Number of proof samples to generate per problem in the initial round (Round 0)
+# NUM_SAMPLES_INITIAL=2     # Number of proof samples to generate per problem in the initial round (Round 0)
 NUM_SAMPLES_CORRECTION=2  # Number of correction samples to generate per failed attempt in correction rounds (Round > 0)
 TEMPERATURE=1.0           # Inference temperature
 MAX_MODEL_LEN=40960       # Maximum model sequence length

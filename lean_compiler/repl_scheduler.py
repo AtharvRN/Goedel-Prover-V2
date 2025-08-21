@@ -181,7 +181,6 @@ def worker(worker_id, task_queue, result_list, total_restarts, lock, allTactics=
     while True:
         try:
             proof_code_dict = task_queue.get(timeout=10)
-            print("proof_code_dict : ",proof_code_dict)
             proof_code = proof_code_dict["code"]
             proof_name = proof_code_dict["name"]
             # proof_id, proof_command = task_queue.get(timeout=10)  # Get task
@@ -215,6 +214,7 @@ def worker(worker_id, task_queue, result_list, total_restarts, lock, allTactics=
 
             with lock:
                 result_list.append(response)
+            print("Response:", response)
 
             if response["compilation_result"]["system_errors"] is not None:
 
