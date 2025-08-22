@@ -56,7 +56,7 @@ TEMPERATURE=1.0           # Inference temperature
 MAX_MODEL_LEN=40960       # Maximum model sequence length
 
 # --- Compilation Settings ---
-CPUS=64                   # Number of CPU cores to use for parallel compilation
+CPUS=32                   # Number of CPU cores to use for parallel compilation
 
 # --- Pipeline Control ---
 # Maximum number of correction rounds (0 for initial inference only, 1 for initial + one correction round, etc.)
