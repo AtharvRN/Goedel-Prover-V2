@@ -97,7 +97,7 @@ dependencies:
       - fastapi-cli==0.0.7
       - fastrlock==0.8.3
       - filelock==3.16.1
-      - flash-attn==2.7.4.post1 --no-build-isolation
+      # - flash-attn==2.7.4.post1 --no-build-isolation
       - fonttools==4.55.6
       - frozenlist==1.5.0
       - fsspec==2024.9.0
