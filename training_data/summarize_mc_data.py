@@ -4,6 +4,7 @@ import sys
 import argparse
 import re
 from collections import defaultdict
+from typing import Any, Dict, List, Iterable
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if parent_dir not in sys.path:
@@ -11,14 +12,71 @@ if parent_dir not in sys.path:
 
 from lean_compiler.repl_scheduler import scheduler
 
-def extract_jobs_from_jsonl(jsonl_path):
-    def extract_lean4_code(text):
-        match = re.search(r"```lean4(.*?)```", text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return text.strip()
+CODE_BLOCK_REGEX = re.compile(
+    r'```(?:lean4|lean)\s*\n(.*?)```',
+    re.DOTALL | re.IGNORECASE
+)
 
-    jobs = []
+
+def extract_lean4_blocks(text: str) -> List[str]:
+    blocks = CODE_BLOCK_REGEX.findall(text or '')
+    cleaned = [block.strip() for block in blocks if block.strip()]
+    if cleaned:
+        return cleaned
+
+    stripped = (text or '').strip()
+    if stripped and any(keyword in stripped for keyword in ('theorem', 'lemma', 'def', 'by')):
+        return [stripped]
+    return []
+
+
+def gather_lean_blocks(source: Any) -> List[str]:
+    """Normalize different representations of Lean code into a list of blocks."""
+    if isinstance(source, dict):
+        candidate = source.get('lean4_code')
+        blocks: List[str] = []
+        if isinstance(candidate, list):
+            blocks = [c.strip() for c in candidate if isinstance(c, str) and c.strip()]
+        elif isinstance(candidate, str) and candidate.strip():
+            blocks = [candidate.strip()]
+        if blocks:
+            return blocks
+
+        for key in ('content', 'raw_output', 'text', 'code'):
+            text_val = source.get(key)
+            if isinstance(text_val, str) and text_val.strip():
+                blocks = extract_lean4_blocks(text_val)
+                if blocks:
+                    return blocks
+        return []
+
+    if isinstance(source, str):
+        return extract_lean4_blocks(source)
+
+    text_val = str(source or '').strip()
+    if not text_val:
+        return []
+    return extract_lean4_blocks(text_val)
+
+
+def normalize_step_items(obj: Any) -> Iterable[tuple]:
+    if isinstance(obj, dict):
+        keyed = []
+        for key, value in obj.items():
+            if isinstance(key, str) and key.startswith('step_'):
+                digits = re.sub(r'\D', '', key)
+                step_num = int(digits) if digits else 0
+                keyed.append((step_num, value))
+        for step_num, value in sorted(keyed, key=lambda kv: kv[0]):
+            yield step_num, value
+    elif isinstance(obj, list):
+        for idx, value in enumerate(obj, start=1):
+            yield idx, value
+
+
+def extract_jobs_from_jsonl(jsonl_path: str) -> List[Dict[str, Any]]:
+    jobs: List[Dict[str, Any]] = []
+
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line in f:
             if not line.strip():
@@ -26,35 +84,57 @@ def extract_jobs_from_jsonl(jsonl_path):
             item = json.loads(line)
             problem_id = item.get('problem_id') or item.get('name')
             name = item.get('name', problem_id)
+            sample_id = item.get('sample_id')
+
+            base_name = name or 'item'
+            if sample_id is not None:
+                base_name = f'{base_name}_sample{sample_id}'
+
             mc = item.get('mc_proof_completions', {})
-            for step in range(1, 5):
-                samples = mc.get(f'step_{step}', [])
-                for idx, code in enumerate(samples):
-                    lean_code = extract_lean4_code(code)
+            for step_num, samples in normalize_step_items(mc):
+                if not isinstance(samples, list):
+                    continue
+                for sample_idx, sample in enumerate(samples):
+                    blocks = gather_lean_blocks(sample)
+                    if not blocks:
+                        continue
+                    for block_idx, code in enumerate(blocks):
+                        job_name = f'{base_name}_mc_step{step_num}_sample{sample_idx}'
+                        if len(blocks) > 1:
+                            job_name += f'_block{block_idx}'
+                        jobs.append({
+                            'name': job_name,
+                            'code': code,
+                            'problem_id': problem_id,
+                            'step': step_num,
+                            'sample_idx': sample_idx,
+                            'block_idx': block_idx if len(blocks) > 1 else None,
+                            'source': 'mc'
+                        })
+
+            cot_steps = item.get('cot_steps', [])
+            for step_num, step in normalize_step_items(cot_steps):
+                blocks = gather_lean_blocks(step)
+                if not blocks:
+                    continue
+                for block_idx, code in enumerate(blocks):
+                    job_name = f'{base_name}_cot_step{step_num}'
+                    if len(blocks) > 1:
+                        job_name += f'_block{block_idx}'
                     jobs.append({
-                        'name': f'{name}_mc_step{step}_sample{idx}',
-                        'code': lean_code,
+                        'name': job_name,
+                        'code': code,
                         'problem_id': problem_id,
-                        'step': step,
-                        'sample_idx': idx,
-                        'source': 'mc'
+                        'step': step_num,
+                        'sample_idx': None,
+                        'block_idx': block_idx if len(blocks) > 1 else None,
+                        'source': 'cot'
                     })
-            cot_steps = item.get('cot_steps', {})
-            step5 = cot_steps.get('step_5', '') if isinstance(cot_steps, dict) else (cot_steps[4] if isinstance(cot_steps, list) and len(cot_steps) >= 5 else '')
-            if step5:
-                lean_code = extract_lean4_code(step5)
-                jobs.append({
-                    'name': f'{name}_cot_step5',
-                    'code': lean_code,
-                    'problem_id': problem_id,
-                    'step': 5,
-                    'sample_idx': None,
-                    'source': 'cot'
-                })
+
     return jobs
 
 def parse_name(name):
-    m = re.match(r"^(.*)_(mc|cot)_step(\d+)(?:_sample(\d+))?$", name)
+    m = re.match(r"^(.*)_(mc|cot)_step(\d+)(?:_sample(\d+))?(?:_block(\d+))?$", name)
     if m:
         problem = m.group(1)
         typ = m.group(2)
