@@ -226,6 +226,59 @@ def compute_step_max_tokens(
     return max(min_tokens, min(max_tokens, scaled))
 
 
+def build_enhanced_items(
+    items: List[Dict[str, Any]],
+    outputs_by_item: Dict[int, Dict[int, List[Dict[str, Any]]]],
+    step_token_limits: Dict[int, Dict[int, int]],
+    samples_per_step: int,
+    exclude_last_step: bool,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_step_tokens: int,
+    min_step_fraction: float,
+    include_empty: bool,
+) -> List[Dict[str, Any]]:
+    enhanced: List[Dict[str, Any]] = []
+
+    for idx, item in enumerate(items):
+        step_to_completions = outputs_by_item.get(idx, {})
+
+        if not step_to_completions and not include_empty:
+            continue
+
+        new_item = item.copy()
+        
+        mc_completions: Dict[str, Any] = {}
+        step_settings: Dict[str, Any] = {}
+        for step_num, completions in sorted(step_to_completions.items()):
+            mc_completions[f'step_{step_num}'] = completions
+            if idx in step_token_limits and step_num in step_token_limits[idx]:
+                step_settings[f'step_{step_num}'] = {
+                    'max_new_tokens': step_token_limits[idx][step_num]
+                }
+
+        new_item['mc_proof_completions'] = mc_completions
+        new_item['mc_params'] = {
+            'samples_per_step': samples_per_step,
+            'num_steps_generated': len(step_to_completions),
+            'exclude_last_step': exclude_last_step,
+            'generation': {
+                'max_new_tokens': max_tokens,
+                'temperature': temperature,
+                'top_p': top_p,
+                'min_step_tokens': min_step_tokens,
+                'min_step_fraction': min_step_fraction,
+            }
+        }
+        if step_settings:
+            new_item['mc_step_settings'] = step_settings
+
+        enhanced.append(new_item)
+
+    return enhanced
+
+
 def generate_mc_proof_completions(
     model: LLM,
     items: List[Dict[str, Any]],
@@ -237,6 +290,8 @@ def generate_mc_proof_completions(
     batch_prompts: int = 8,
     min_step_tokens: int = 512,
     min_step_fraction: float = 0.25,
+    output_path: Optional[str] = None,
+    save_every: int = 10,
 ) -> List[Dict[str, Any]]:
     """For each item, for each step (optionally excluding last), generate N completions.
     
@@ -354,38 +409,42 @@ def generate_mc_proof_completions(
             print(f"Processed {b_idx + 1}/{len(batches)} batches | "
                   f"Code coverage: {completions_with_code}/{total_completions} ({coverage:.1%})")
 
-    # Attach to original items
-    enhanced: List[Dict[str, Any]] = []
-    for idx, item in enumerate(items):
-        step_to_completions = outputs_by_item.get(idx, {})
-        new_item = item.copy()
-        
-        # Organize completions by step
-        mc_completions = {}
-        step_settings = {}
-        for step_num, completions in step_to_completions.items():
-            mc_completions[f'step_{step_num}'] = completions
-            if idx in step_token_limits and step_num in step_token_limits[idx]:
-                step_settings[f'step_{step_num}'] = {
-                    'max_new_tokens': step_token_limits[idx][step_num]
-                }
+        if output_path and save_every > 0 and (b_idx + 1) % save_every == 0:
+            partial_items = build_enhanced_items(
+                items=items,
+                outputs_by_item=outputs_by_item,
+                step_token_limits=step_token_limits,
+                samples_per_step=samples_per_step,
+                exclude_last_step=exclude_last_step,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                min_step_tokens=min_step_tokens,
+                min_step_fraction=min_step_fraction,
+                include_empty=False,
+            )
+            suffix = f".part{b_idx + 1}.jsonl"
+            inter_path = (
+                output_path[:-6] + suffix
+                if output_path.endswith('.jsonl') else output_path + suffix
+            )
+            save_jsonl(inter_path, partial_items)
+            print(f"Saved intermediate results to {inter_path}")
 
-        new_item['mc_proof_completions'] = mc_completions
-        new_item['mc_params'] = {
-            'samples_per_step': samples_per_step,
-            'num_steps_generated': len(step_to_completions),
-            'exclude_last_step': exclude_last_step,
-            'generation': {
-                'max_new_tokens': max_tokens,
-                'temperature': temperature,
-                'top_p': top_p,
-                'min_step_tokens': min_step_tokens,
-                'min_step_fraction': min_step_fraction,
-            }
-        }
-        if step_settings:
-            new_item['mc_step_settings'] = step_settings
-        enhanced.append(new_item)
+    # Attach to original items
+    enhanced = build_enhanced_items(
+        items=items,
+        outputs_by_item=outputs_by_item,
+        step_token_limits=step_token_limits,
+        samples_per_step=samples_per_step,
+        exclude_last_step=exclude_last_step,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        min_step_tokens=min_step_tokens,
+        min_step_fraction=min_step_fraction,
+        include_empty=True,
+    )
     
     # Final statistics
     coverage = completions_with_code / total_completions if total_completions > 0 else 0
@@ -428,6 +487,8 @@ def main():
                     help='Minimum max_new_tokens allocated to any step')
     ap.add_argument('--min_step_fraction', type=float, default=0.25,
                     help='Minimum fraction of max_new_tokens assigned to the earliest steps')
+    ap.add_argument('--save_every', type=int, default=10,
+                    help='Save intermediate outputs every N batches (0 disables checkpoints)')
     ap.add_argument('--gpu', type=int, default=1, 
                     help='Tensor parallel size')
     ap.add_argument('--max_model_len', type=int, default=40960, 
@@ -462,6 +523,8 @@ def main():
         batch_prompts=args.batch_prompts,
         min_step_tokens=args.min_step_tokens,
         min_step_fraction=args.min_step_fraction,
+        output_path=args.output_jsonl,
+        save_every=args.save_every,
     )
 
     print(f"Saving output: {args.output_jsonl}")
