@@ -208,6 +208,24 @@ def normalize_cot_steps(item: Dict[str, Any]) -> Optional[List[Dict[str, str]]]:
 # Core generation
 # -----------------------------
 
+def compute_step_max_tokens(
+    step_num: int,
+    total_steps: int,
+    max_tokens: int,
+    min_tokens: int,
+    min_fraction: float,
+) -> int:
+    """Scale max_new_tokens based on which step is being completed."""
+    if total_steps <= 0:
+        return max(max_tokens, min_tokens)
+
+    fraction = step_num / total_steps
+    fraction = max(min_fraction, min(1.0, fraction))
+
+    scaled = int(max_tokens * fraction)
+    return max(min_tokens, min(max_tokens, scaled))
+
+
 def generate_mc_proof_completions(
     model: LLM,
     items: List[Dict[str, Any]],
@@ -217,6 +235,8 @@ def generate_mc_proof_completions(
     temperature: float = 1.0,
     top_p: float = 0.95,
     batch_prompts: int = 8,
+    min_step_tokens: int = 512,
+    min_step_fraction: float = 0.25,
 ) -> List[Dict[str, Any]]:
     """For each item, for each step (optionally excluding last), generate N completions.
     
@@ -225,21 +245,29 @@ def generate_mc_proof_completions(
         items: List of items with cot_steps
         samples_per_step: Number of completions to generate per step
         exclude_last_step: If True, don't generate for the final step (assumed to already contain proof)
-        max_tokens: Max tokens for generation
+        max_tokens: Upper bound for max_new_tokens (used for later steps)
         temperature: Sampling temperature
         top_p: Top-p sampling
         batch_prompts: Number of prompts to batch in vLLM calls
+        min_step_tokens: Minimum max_new_tokens allocated to any step
+        min_step_fraction: Minimum fraction of max_tokens assigned to the earliest steps
     """
     # Prepare all prompts
     prompt_records: List[Dict[str, Any]] = []
     valid_item_indices: List[int] = []
     skipped_no_cot: int = 0
+    skipped_too_short: int = 0
     total_prompts_per_item: Dict[int, int] = {}
+    step_token_limits: Dict[int, Dict[int, int]] = {}
     
     for idx, item in enumerate(items):
         steps = normalize_cot_steps(item)
         if not steps:
             skipped_no_cot += 1
+            continue
+
+        if len(steps) <= 2:
+            skipped_too_short += 1
             continue
         
         valid_item_indices.append(idx)
@@ -257,24 +285,27 @@ def generate_mc_proof_completions(
         for step in steps[:steps_to_generate]:
             step_num = step['step_num']
             prompt = build_step_context_prompt(base_prompt, steps, step_num)
+            step_limit = compute_step_max_tokens(
+                step_num=step_num,
+                total_steps=num_steps,
+                max_tokens=max_tokens,
+                min_tokens=min_step_tokens,
+                min_fraction=min_step_fraction,
+            )
             prompt_records.append({
                 'item_index': idx,
                 'step_num': step_num,
                 'prompt': prompt,
                 'sample_id': item.get('sample_id', 0),  # Track which sample this is from
+                'max_new_tokens': step_limit,
             })
+            step_token_limits.setdefault(idx, {})[step_num] = step_limit
     
     print(f"Prepared {len(prompt_records)} prompts for {len(valid_item_indices)} valid items")
     print(f"Skipped {skipped_no_cot} items without valid CoT steps")
+    print(f"Skipped {skipped_too_short} items with <=2 CoT steps")
     print(f"Generating {samples_per_step} completions per prompt")
     
-    sampling_params = SamplingParams(
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=max_tokens,
-        n=samples_per_step,
-    )
-
     # Run vLLM in prompt batches
     outputs_by_item: Dict[int, Dict[int, List[Dict[str, Any]]]] = {}
     batches = [prompt_records[i:i + batch_prompts] for i in range(0, len(prompt_records), batch_prompts)]
@@ -285,7 +316,16 @@ def generate_mc_proof_completions(
 
     for b_idx, batch in enumerate(tqdm(batches, desc="Generating MC proofs")):
         prompts = [rec['prompt'] for rec in batch]
-        vouts = model.generate(prompts, sampling_params)
+        sampling_params_batch = [
+            SamplingParams(
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=rec['max_new_tokens'],
+                n=samples_per_step,
+            )
+            for rec in batch
+        ]
+        vouts = model.generate(prompts, sampling_params_batch)
 
         for rec, out in zip(batch, vouts):
             iidx = rec['item_index']
@@ -322,9 +362,14 @@ def generate_mc_proof_completions(
         
         # Organize completions by step
         mc_completions = {}
+        step_settings = {}
         for step_num, completions in step_to_completions.items():
             mc_completions[f'step_{step_num}'] = completions
-        
+            if idx in step_token_limits and step_num in step_token_limits[idx]:
+                step_settings[f'step_{step_num}'] = {
+                    'max_new_tokens': step_token_limits[idx][step_num]
+                }
+
         new_item['mc_proof_completions'] = mc_completions
         new_item['mc_params'] = {
             'samples_per_step': samples_per_step,
@@ -334,8 +379,12 @@ def generate_mc_proof_completions(
                 'max_new_tokens': max_tokens,
                 'temperature': temperature,
                 'top_p': top_p,
+                'min_step_tokens': min_step_tokens,
+                'min_step_fraction': min_step_fraction,
             }
         }
+        if step_settings:
+            new_item['mc_step_settings'] = step_settings
         enhanced.append(new_item)
     
     # Final statistics
@@ -375,6 +424,10 @@ def main():
                     help='Top-p nucleus sampling')
     ap.add_argument('--batch_prompts', type=int, default=8, 
                     help='Number of prompts per vLLM call')
+    ap.add_argument('--min_step_tokens', type=int, default=512,
+                    help='Minimum max_new_tokens allocated to any step')
+    ap.add_argument('--min_step_fraction', type=float, default=0.25,
+                    help='Minimum fraction of max_new_tokens assigned to the earliest steps')
     ap.add_argument('--gpu', type=int, default=1, 
                     help='Tensor parallel size')
     ap.add_argument('--max_model_len', type=int, default=40960, 
@@ -407,6 +460,8 @@ def main():
         temperature=args.temperature,
         top_p=args.top_p,
         batch_prompts=args.batch_prompts,
+        min_step_tokens=args.min_step_tokens,
+        min_step_fraction=args.min_step_fraction,
     )
 
     print(f"Saving output: {args.output_jsonl}")
