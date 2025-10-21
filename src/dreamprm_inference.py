@@ -41,6 +41,44 @@ from lean_compiler.repl_scheduler import scheduler  # type: ignore
 
 
 # ---------------------------------------------------------------------------
+# Simple prompt and parsing utilities
+# ---------------------------------------------------------------------------
+
+def create_simple_prompt(formal_statement: str) -> str:
+    return f"""
+Complete the following Lean 4 code:
+
+```lean4
+{formal_statement}
+```
+
+Before producing the Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies.
+The plan should highlight key ideas, intermediate lemmas, and proof structures that will guide the construction of the final formal proof.
+""".strip()
+
+
+def parse_simple_steps(response: str) -> List[str]:
+    """
+    Parse the response into reasoning steps based on the simple prompt format.
+    Extracts sections starting with '###' as steps.
+    """
+    lines = response.split('\n')
+    steps = []
+    current_step = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("###"):
+            if current_step:
+                steps.append(' '.join(current_step).strip())
+            current_step = [line]
+        elif current_step:
+            current_step.append(line)
+    if current_step:
+        steps.append(' '.join(current_step).strip())
+    return steps
+
+
+# ---------------------------------------------------------------------------
 # IO helpers
 # ---------------------------------------------------------------------------
 
@@ -152,6 +190,7 @@ def build_prm_input(
         if step_index < steps_to_score:
             messages.append({"role": "assistant", "content": "+"})
             conversation_with_plus = apply_chat_template(tokenizer, messages)
+            # print("conversation_with_plus:", conversation_with_plus)
             encoding_plus = tokenizer(
                 conversation_with_plus,
                 return_tensors="pt",
@@ -295,6 +334,7 @@ class CandidateResult:
     assembled_code: Optional[str]
     finish_reason: Optional[str]
     selected: bool = False
+    full_reasoning: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -359,7 +399,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num_candidates",
         type=int,
-        default=8,
+        default=1,
         help="Number of prover candidates to sample per problem.",
     )
     parser.add_argument(
@@ -377,13 +417,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=4096,
+        default=40960,
         help="Maximum new tokens for prover generation.",
     )
     parser.add_argument(
         "--max_model_len",
         type=int,
-        default=8192,
+        default=40960,
         help="Maximum model length for prover (context window).",
     )
     parser.add_argument(
@@ -414,7 +454,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prm_max_length",
         type=int,
-        default=4096,
+        default=40690,
         help="Maximum sequence length for PRM tokenizer.",
     )
     parser.add_argument(
@@ -487,21 +527,75 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Initialize PRM model
+    # Stage 1: Goedel-Prover inference for all problems
+    # ------------------------------------------------------------------
+    all_candidates = []  # List[List[CandidateResult]] per problem
+    print("Length of dataset:", len(data))
+    for start in tqdm(range(0, len(data), args.batch_size), desc="Prover Inference"):
+        batch = data[start : start + args.batch_size]
+        prompts = [create_simple_prompt(item["formal_statement"]) for item in batch]
+        # print("prompts:", prompts)
+        vllm_outputs = llm.generate(prompts, sampling_params)
+        # print("vllm_outputs:", vllm_outputs)
+        for item, llm_output in zip(batch, vllm_outputs):
+            candidates = []
+            for cand_idx, out in enumerate(llm_output.outputs):
+                raw_text = out.text.strip()
+                # print("raw_text:", raw_text)
+                steps = parse_simple_steps(raw_text)
+                # steps = (steps + [""] * 5)[:5]
+                # print("steps:", steps)
+                candidate = {
+                    "index": cand_idx,
+                    "response": raw_text,
+                    "steps": steps,
+                    "finish_reason": getattr(out, "finish_reason", None),
+                }
+                candidates.append(candidate)
+            all_candidates.append({
+                "problem": item,
+                "candidates": candidates
+            })
+
+    # Deallocate prover model to free memory
+    del llm
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # ------------------------------------------------------------------
+    # Initialize PRM model (after prover inference to save memory)
     # ------------------------------------------------------------------
     prm_dtype = str_to_dtype(args.prm_dtype)
     print(f"Loading Process Reward Model from {args.prm_model}...")
-    prm_tokenizer = AutoTokenizer.from_pretrained(
-        args.prm_model,
-        trust_remote_code=True,
-        use_fast=False,
-    )
-
-    prm_model = AutoModelForCausalLM.from_pretrained(
-        args.prm_model,
-        trust_remote_code=True,
-        torch_dtype=prm_dtype,
-    ).to(args.prm_device)
+    if args.prm_model.endswith('.pt'):
+        # Load base model and apply checkpoint
+        base_model = "meta-llama/Llama-3.2-1B"  # Assuming this is the base model
+        prm_tokenizer = AutoTokenizer.from_pretrained(
+            base_model,
+            trust_remote_code=True,
+            use_fast=False,
+        )
+        prm_model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            trust_remote_code=True,
+            torch_dtype=prm_dtype,
+        ).to(args.prm_device)
+        checkpoint = torch.load(args.prm_model, map_location='cpu')
+        prm_model.load_state_dict(checkpoint, strict=False)
+        print(f"Loaded checkpoint from {args.prm_model} onto base model {base_model} (strict=False)")
+    else:
+        prm_tokenizer = AutoTokenizer.from_pretrained(
+            args.prm_model,
+            trust_remote_code=True,
+            use_fast=False,
+        )
+        prm_model = AutoModelForCausalLM.from_pretrained(
+            args.prm_model,
+            trust_remote_code=True,
+            torch_dtype=prm_dtype,
+        ).to(args.prm_device)
     prm_model.eval()
 
     pos_tokens = prm_tokenizer.encode("+", add_special_tokens=False)
@@ -512,121 +606,98 @@ def main() -> None:
     neg_token_id = neg_tokens[0]
 
     # ------------------------------------------------------------------
-    # Generation + scoring loop
+    # Stage 2: PRM scoring and selection
     # ------------------------------------------------------------------
     results: List[ProblemResult] = []
     compile_jobs: List[Dict[str, Any]] = []
-
     num_steps_to_score = max(0, args.steps_to_score)
-
-    for start in tqdm(range(0, len(data), args.batch_size), desc="Problems"):
-        batch = data[start : start + args.batch_size]
-        prompts = [create_cot_prompt(item["formal_statement"]) for item in batch]
-        vllm_outputs = llm.generate(prompts, sampling_params)
-
-        for item, llm_output in zip(batch, vllm_outputs):
-            problem_id = item.get("problem_id") or item.get("name") or f"problem_{start}"
-            informal_prefix = item.get("informal_prefix", "")
-            formal_statement = item.get("formal_statement", "")
-            problem_text = f"{informal_prefix}{formal_statement}"
-
-            candidates: List[CandidateResult] = []
-
-            for cand_idx, out in enumerate(llm_output.outputs):
-                raw_text = out.text.strip()
-                steps = parse_cot_steps(raw_text)
-                # Limit to first five steps per prompt spec
-                steps = (steps + [""] * 5)[:5]
-
-                steps_available = len([s for s in steps if s.strip()])
-                effective_steps_to_score = min(
-                    num_steps_to_score,
-                    max(0, steps_available - 1),
-                )
-
-                step_scores: List[float] = []
-                mean_score: Optional[float] = None
-
-                if effective_steps_to_score > 0:
-                    prm_input = build_prm_input(
-                        tokenizer=prm_tokenizer,
-                        problem_text=problem_text,
-                        steps=steps,
-                        steps_to_score=effective_steps_to_score,
-                        prm_max_length=args.prm_max_length,
-                        pos_token_id=pos_token_id,
-                    )
-
-                    if (
-                        prm_input is not None
-                        and len(prm_input.reward_positions) >= effective_steps_to_score
-                    ):
-                        with torch.inference_mode():
-                            outputs = prm_model(
-                                input_ids=prm_input.input_ids.to(args.prm_device),
-                                attention_mask=prm_input.attention_mask.to(args.prm_device),
-                            )
-                        step_scores = compute_step_probabilities(
-                            logits=outputs.logits,
-                            reward_positions=prm_input.reward_positions[:effective_steps_to_score],
-                            pos_token_id=pos_token_id,
-                            neg_token_id=neg_token_id,
-                        )
-                        if step_scores:
-                            mean_score = sum(step_scores) / len(step_scores)
-
-                lean_code = assemble_formal_proof(formal_statement, steps[4] if len(steps) >= 5 else "")
-
-                candidate = CandidateResult(
-                    index=cand_idx,
-                    response=raw_text,
+    for entry in tqdm(all_candidates, desc="PRM Scoring"):
+        item = entry["problem"]
+        candidates_raw = entry["candidates"]
+        problem_id = item.get("problem_id") or item.get("name") or "unknown_problem"
+        informal_prefix = item.get("informal_prefix", "")
+        formal_statement = item.get("formal_statement", "")
+        problem_text = f"{informal_prefix}{formal_statement}"
+        candidates: List[CandidateResult] = []
+        for cand in candidates_raw:
+            steps = cand["steps"]
+            steps_available = len([s for s in steps if s.strip()])
+            effective_steps_to_score = max(0, steps_available - 1)  # Evaluate all intermediate steps (exclude final Lean step)
+            step_scores: List[float] = []
+            mean_score: Optional[float] = None
+            if effective_steps_to_score > 0:
+                prm_input = build_prm_input(
+                    tokenizer=prm_tokenizer,
+                    problem_text=problem_text,
                     steps=steps,
-                    step_scores=[float(x) for x in step_scores],
-                    mean_score=float(mean_score) if mean_score is not None else None,
-                    lean_code=lean_code,
-                    assembled_code=lean_code,
-                    finish_reason=getattr(out, "finish_reason", None),
+                    steps_to_score=effective_steps_to_score,
+                    prm_max_length=args.prm_max_length,
+                    pos_token_id=pos_token_id,
                 )
-                candidates.append(candidate)
-
-            # Select best candidate
-            selected_index: Optional[int] = None
-            if candidates:
-                def candidate_score(c: CandidateResult) -> float:
-                    if c.mean_score is None:
-                        return float("-inf")
-                    if math.isnan(c.mean_score):
-                        return float("-inf")
-                    return c.mean_score
-
-                selected_index = max(range(len(candidates)), key=lambda i: candidate_score(candidates[i]))
-                candidates[selected_index].selected = True
-
-            selected_candidate = candidates[selected_index] if selected_index is not None else None
-            compile_result: Optional[Dict[str, Any]] = None
-
-            if (
-                not args.skip_compile
-                and selected_candidate is not None
-                and selected_candidate.assembled_code
-            ):
-                compile_jobs.append(
-                    {
-                        "name": problem_id,
-                        "code": selected_candidate.assembled_code,
-                        "problem_id": problem_id,
-                    }
-                )
-
-            problem_result = ProblemResult(
-                problem_id=problem_id,
-                formal_statement=formal_statement,
-                informal_prefix=informal_prefix,
-                candidates=candidates,
-                selected_index=selected_index,
-                compile_result=compile_result,
+                if (
+                    prm_input is not None
+                    and len(prm_input.reward_positions) >= effective_steps_to_score
+                ):
+                    with torch.inference_mode():
+                        outputs = prm_model(
+                            input_ids=prm_input.input_ids.to(args.prm_device),
+                            attention_mask=prm_input.attention_mask.to(args.prm_device),
+                        )
+                    step_scores = compute_step_probabilities(
+                        logits=outputs.logits,
+                        reward_positions=prm_input.reward_positions[:effective_steps_to_score],
+                        pos_token_id=pos_token_id,
+                        neg_token_id=neg_token_id,
+                    )
+                    if step_scores:
+                        mean_score = sum(step_scores) / len(step_scores)
+            lean_code = assemble_formal_proof(formal_statement, steps[4] if len(steps) >= 5 else "")
+            candidate_obj = CandidateResult(
+                index=cand["index"],
+                response=cand["response"],
+                steps=steps,
+                step_scores=[float(x) for x in step_scores],
+                mean_score=float(mean_score) if mean_score is not None else None,
+                lean_code=lean_code,
+                assembled_code=lean_code,
+                finish_reason=cand["finish_reason"],
+                full_reasoning="\n".join([s for s in steps if s.strip()]),
             )
-            results.append(problem_result)
+            candidates.append(candidate_obj)
+        # Select best candidate
+        selected_index: Optional[int] = None
+        if candidates:
+            def candidate_score(c: CandidateResult) -> float:
+                if c.mean_score is None:
+                    return float("-inf")
+                if math.isnan(c.mean_score):
+                    return float("-inf")
+                return c.mean_score
+            selected_index = max(range(len(candidates)), key=lambda i: candidate_score(candidates[i]))
+            candidates[selected_index].selected = True
+        selected_candidate = candidates[selected_index] if selected_index is not None else None
+        compile_result: Optional[Dict[str, Any]] = None
+        if (
+            not args.skip_compile
+            and selected_candidate is not None
+            and selected_candidate.assembled_code
+        ):
+            compile_jobs.append(
+                {
+                    "name": problem_id,
+                    "code": selected_candidate.assembled_code,
+                    "problem_id": problem_id,
+                }
+            )
+        problem_result = ProblemResult(
+            problem_id=problem_id,
+            formal_statement=formal_statement,
+            informal_prefix=informal_prefix,
+            candidates=candidates,
+            selected_index=selected_index,
+            compile_result=compile_result,
+        )
+        results.append(problem_result)
 
     # ------------------------------------------------------------------
     # Compile selected candidates (if requested)
